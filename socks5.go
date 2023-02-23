@@ -13,9 +13,6 @@ const (
 	socks5Version = uint8(5)
 )
 
-type ConnectionBegin func()
-type ConnectionFinishCallback func(count int, err error)
-
 // Config is used to setup and configure a Server
 type Config struct {
 	// AuthMethods can be provided to implement custom authentication
@@ -114,9 +111,11 @@ func (s *Server) Serve(l net.Listener) error {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			return err
+			// log.Printf("监听端口 出错 %+v", err)
+			continue
+		} else {
+			go s.ServeConn(conn)
 		}
-		go s.ServeConn(conn)
 	}
 	return nil
 }

@@ -167,11 +167,10 @@ func (s *Server) handleConnect(ctx context.Context, conn conn, req *Request) err
 	}
 
 	// Attempt to connect
-	dialCallBack := s.config.Dial
-	if dialCallBack == nil {
-		dialCallBack = func(ctx context.Context, net_, addr string) (net.Conn, error, ConnectionBegin, ConnectionFinishCallback) {
-			conn, err := net.Dial(net_, addr)
-			return conn, err, nil, nil
+	dial := s.config.Dial
+	if dial == nil {
+		dial = func(ctx context.Context, net_, addr string) (net.Conn, error) {
+			return net.Dial(net_, addr)
 		}
 	}
 	nextAddr := ""
@@ -184,7 +183,7 @@ func (s *Server) handleConnect(ctx context.Context, conn conn, req *Request) err
 	} else {
 		nextAddr = req.realDestAddr.Address()
 	}
-	target, err, begin, finish := dialCallBack(ctx, "tcp", nextAddr)
+	target, err := dial(ctx, "tcp", nextAddr)
 	if err != nil {
 		msg := err.Error()
 		resp := hostUnreachable
@@ -201,37 +200,33 @@ func (s *Server) handleConnect(ctx context.Context, conn conn, req *Request) err
 	if target != nil {
 		defer target.Close()
 	}
-
-	// Send success
-	// local := target.LocalAddr().(*net.TCPAddr)
+	// local := new(net.TCPAddr)
+	// switch target.LocalAddr().(type) {
+	// case *net.TCPAddr:
+	// 	local = target.LocalAddr().(*net.TCPAddr)
+	// default:
+	// 	log.Printf("tcp类型不对")
+	// }
+	// // Send success
 	// bind := AddrSpec{IP: local.IP, Port: local.Port}
 	if err := sendReply(conn, successReply, nil); err != nil {
 		return fmt.Errorf("Failed to send reply: %v", err)
 	}
 
 	// Start proxying
-	if begin != nil {
-		begin()
-	}
-	errCh := make(chan *ProxyCopyInfo, 2)
+	errCh := make(chan error, 2)
 	go proxy(target, req.bufConn, errCh)
 	go proxy(conn, target, errCh)
-	count := 0
+
 	// Wait
-	err = nil
 	for i := 0; i < 2; i++ {
 		e := <-errCh
-		count = int(e.Count)
-		if e.Error != nil {
+		if e != nil {
 			// return from this function closes target (and conn).
-			err = e.Error
-			break
+			return e
 		}
 	}
-	if finish != nil {
-		finish(count, err)
-	}
-	return err
+	return nil
 }
 
 // handleBind is used to handle a connect command
@@ -369,20 +364,15 @@ type closeWriter interface {
 	CloseWrite() error
 }
 
-type ProxyCopyInfo struct {
-	Error error
-	Count int64
-}
-
 // proxy is used to suffle data from src to destination, and sends errors
 // down a dedicated channel
-func proxy(dst io.Writer, src io.Reader, errCh chan *ProxyCopyInfo) {
-	info := new(ProxyCopyInfo)
-	count, err := io.Copy(dst, src)
+func proxy(dst io.Writer, src io.Reader, errCh chan error) {
+	if dst == nil || src == nil {
+		errCh <- fmt.Errorf("source or targer nil")
+	}
+	_, err := io.Copy(dst, src)
 	if tcpConn, ok := dst.(closeWriter); ok {
 		tcpConn.CloseWrite()
 	}
-	info.Count = count
-	info.Error = err
-	errCh <- info
+	errCh <- err
 }
